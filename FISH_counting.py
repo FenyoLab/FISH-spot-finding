@@ -8,15 +8,16 @@ For each image in folder:
 (5) Output each image with nuclei and spots outlined - so these can be examined for correctness
 """
 
-from tkinter import filedialog
 import glob
 import os
 from skimage import io, exposure, feature, img_as_ubyte, segmentation, draw, filters, morphology
 import identify_nuclei as idn
 import matplotlib.pyplot as plt
 import numpy as np
-import cv2
+from cv2 import cv2
 import pandas as pd
+from matplotlib.ticker import PercentFormatter ### new added
+np.warnings.filterwarnings('ignore') ####new add
 
 def read_parameters_from_file(file_name):
     params = {}
@@ -81,16 +82,19 @@ def reshape_to_rgb(grey_img):
     ret_img[:, :, 2] = grey_img_
     return ret_img
 
-save_extra_images=True # this is for spot detection, set to False unless testing
-temp_dir='' #'/Users/sarahkeegan/Downloads/images/test/' # this is for the nuclei detection, leave blank unless testing
-do_finding=False
-plot_results_hists=True
+save_extra_images=False # this is for spot detection, set to False unless testing
+temp_dir='' # this is for the nuclei detection, leave blank unless testing
+do_finding=True #set to True to find spots
+plot_results_hists=True #set to True to make plots of the spot-finding results
 
-base_dir = filedialog.askdirectory()
-#base_dir = "/Users/sarahkeegan/Dropbox/mac_files/fenyolab/data_and_results/davoli"
+base_dir=input()
+work_dir=input()
+
+#base_dir="/Volumes/Seagate Backup Plus Drive/Nazario/testing"
+#work_dir="/Volumes/Seagate Backup Plus Drive/Nazario/testing_results"
 
 params = read_parameters_from_file(base_dir + '/spot_counting_parameters.txt')
-folders=params.keys()
+folders=list(params.keys())
 if(do_finding):
     spot_df=pd.DataFrame()
 
@@ -103,6 +107,19 @@ if(do_finding):
         #rescale_intensity=True
         #use_median_filter=False
         #median_filter_r=2
+
+        #set up output directory
+        if (not os.path.exists(work_dir + '/' + folder)):
+            os.mkdir(work_dir + '/' + folder)
+        cur_work_dir = work_dir + '/' + folder
+
+        blob_th_GFP = float(params[folder]['blob_th_GFP'])
+        blob_th_RFP = float(params[folder]['blob_th_RFP'])
+        spot_dist = int(params[folder]['spot_distance_cutoff'])
+        if(params[folder]['nucl_id_contrast_enh_type'] == 'none'):
+            DAPI_ce_perc = 0
+        else:
+            DAPI_ce_perc = float(params[folder]['nucl_id_ce_percentile'])
 
         #open 3 files, one for each channel
         file_list = glob.glob(base_dir + '/' + folder + '/*_DAPI.tif')
@@ -127,8 +144,8 @@ if(do_finding):
                 continue
 
             if (save_extra_images):
-                if (not os.path.exists(base_dir + '/' + folder + '/nuclei')):
-                    os.mkdir(base_dir + '/' + folder + '/nuclei')
+                if (not os.path.exists(cur_work_dir + '/nuclei')):
+                    os.mkdir(cur_work_dir + '/nuclei')
 
             DAPI_img = exposure.rescale_intensity(DAPI_img)
             GFP_img = exposure.rescale_intensity(GFP_img)
@@ -136,8 +153,12 @@ if(do_finding):
 
             #identify nuclei in DAPI - setup params
             nucl_id = idn.identify_nuclei_class()
-            nucl_id.contrast_enh_type = 'none' # 'rescale_percentile'
-            nucl_id.contrast_enh_rescale_perc = 0.1
+            if(params[folder]['nucl_id_contrast_enh_type'] == 'none'):
+                nucl_id.contrast_enh_type = ''
+            else:
+                nucl_id.contrast_enh_type = params[folder]['nucl_id_contrast_enh_type']
+
+            nucl_id.contrast_enh_rescale_perc = params[folder]['nucl_id_ce_percentile']
             nucl_id.filter_type = 'median'
             nucl_id.filter_radius = params[folder]['nucl_id_med_filter_size']
             nucl_id.ws_use_erosion = False
@@ -154,6 +175,9 @@ if(do_finding):
             nucl_id.process_image(DAPI_img, temp_dir)
             outline_img = np.copy(nucl_id.outline_img)
 
+            io.imsave(cur_work_dir + '/' + nucl_outline_file[:-4]+'_pre-filtered_mask_'+str(DAPI_ce_perc)+'.tif',
+                      nucl_id.orig_image_mask.astype('uint8')*255)
+
             # label each object in outline image with its area, eccentricity and solidity
             (outline_img, areas, eccentricities, solidities, maj_ax_lens) = get_props_and_label(outline_img, nucl_id.nuclei_props)
             all_nucl_areas.extend(areas)
@@ -161,7 +185,7 @@ if(do_finding):
             all_nucl_solidities.extend(solidities)
             all_nucl_maj_ax_lens.extend(maj_ax_lens)
 
-            io.imsave(base_dir + '/' + folder + '/' + nucl_outline_file, outline_img)
+            io.imsave(cur_work_dir + '/' + nucl_outline_file[:-4]+'_'+str(DAPI_ce_perc)+'.tif', outline_img)
 
             #identify spots
             #for each identified nuclei, crop to bounding box
@@ -173,6 +197,12 @@ if(do_finding):
                 meas_img_displ = img_as_ubyte(meas_img_displ)
                 meas_img_displ2 = img_as_ubyte(meas_img_displ).copy()
 
+                #blob th can be different for GFP/RFP
+                if(meas_img_i == 0):
+                    blob_th=blob_th_GFP
+                else:
+                    blob_th=blob_th_RFP
+
                 for prop in nucl_id.nuclei_props:
                     nucl_spot_count = 0
                     (min_row, min_col, max_row, max_col) = prop.bbox
@@ -182,8 +212,8 @@ if(do_finding):
 
                     cur_img_displ = reshape_to_rgb(cur_img)
                     if(save_extra_images):
-                        io.imsave(base_dir + '/' + folder + '/nuclei/orig_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
-                              '_' + labels[meas_img_i] + '.tif', cur_img_displ)
+                        io.imsave(cur_work_dir + '/nuclei/orig_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
+                                  '_' + labels[meas_img_i] + '.tif', cur_img_displ)
 
                     if(params[folder]['white_tophat']):
                         # apply white top hat to subtract background/spots below a minimum size
@@ -191,8 +221,8 @@ if(do_finding):
                         cur_img = exposure.rescale_intensity(cur_img)
                         cur_img_displ = reshape_to_rgb(cur_img)
                         if (save_extra_images):
-                            io.imsave(base_dir + '/' + folder + '/nuclei/white_th_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
-                              '_' + labels[meas_img_i] + '.tif', cur_img_displ)
+                            io.imsave(cur_work_dir + '/nuclei/white_th_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
+                                      '_' + labels[meas_img_i] + '.tif', cur_img_displ)
 
                     # if(False): #rescale_intensity):
                     #     cur_img = exposure.rescale_intensity(cur_img)
@@ -210,18 +240,13 @@ if(do_finding):
                     blobs=feature.blob_log(cur_img, min_sigma=float(params[folder]['blob_min_sigma']),
                                            max_sigma=float(params[folder]['blob_max_sigma']),
                                            num_sigma=int(params[folder]['blob_num_sigma']),
-                                           threshold=float(params[folder]['blob_th']),
+                                           threshold=blob_th,
                                            overlap=float(params[folder]['blob_overlap']),
                                            exclude_border=0) ## setting exclude_border to > 0 finds NO blobs ???
                     # The radius of each blob is approximately sq-root of 2 * sigma
                     nucl_spots=[]
                     for blob_i,blob in enumerate(blobs):
                         radius=(2*blob[2])**0.5
-
-                        #exclude any blobs detected that are within 3 px of the edge of the nuclei
-                        #use distance transform on mask, where dist_map == 1, blob should be ignored
-
-                        #if(dist_map[int(blob[0])][int(blob[1])]==0):
                         if(obj_mask[int(blob[0])][int(blob[1])]):
                             nucl_spot_count += 1
 
@@ -237,9 +262,6 @@ if(do_finding):
                             rr, cc = draw.circle_perimeter(int(blob[0]), int(blob[1]), int(radius),
                                                            method='bresenham', shape=cur_img_displ.shape)
                             cur_img_displ[rr, cc] = [0, 0, 255]
-                        else:
-                            pass
-                            #print("la")
 
                     #calculate nearest distance each blob to other blob within nuclei
                     drawn_labels=[]
@@ -264,17 +286,22 @@ if(do_finding):
                     # add to running spot list
                     spot_list.extend(nucl_spots)
                     if (save_extra_images):
-                        io.imsave(base_dir + '/' + folder + '/nuclei/' + nucl_outline_file[:-4] + "_" + str(prop.label) +
-                              '_' + labels[meas_img_i] + '.tif', cur_img_displ)
+                        io.imsave(cur_work_dir + '/nuclei/' + nucl_outline_file[:-4] + "_" + str(prop.label) +
+                              '_' + labels[meas_img_i] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+str(DAPI_ce_perc)+
+                                  '.tif', cur_img_displ)
 
                 if(meas_img_i==0):
                     if(save_extra_images):
-                        io.imsave(base_dir + '/' + folder + '/' + GFP_file[:-4]+'_blob_marked.tif', meas_img_displ)
-                    io.imsave(base_dir + '/' + folder + '/' + GFP_file[:-4] + '_counts_marked.tif', meas_img_displ2)
+                        io.imsave(cur_work_dir + '/' + GFP_file[:-4]+'_'+str(spot_dist)+'_' +str(blob_th)+'_'+
+                                  str(DAPI_ce_perc)+'_blob_marked.tif', meas_img_displ)
+                    io.imsave(cur_work_dir + '/' + GFP_file[:-4] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+
+                              str(DAPI_ce_perc)+'_counts_marked.tif', meas_img_displ2)
                 else:
                     if (save_extra_images):
-                        io.imsave(base_dir + '/' + folder + '/' + RFP_file[:-4] + '_blob_marked.tif', meas_img_displ)
-                    io.imsave(base_dir + '/' + folder + '/' + RFP_file[:-4] + '_counts_marked.tif', meas_img_displ2)
+                        io.imsave(cur_work_dir + '/' + RFP_file[:-4] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+
+                                  str(DAPI_ce_perc)+'_blob_marked.tif', meas_img_displ)
+                    io.imsave(cur_work_dir + '/' + RFP_file[:-4] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+
+                              str(DAPI_ce_perc)+'_counts_marked.tif', meas_img_displ2)
 
             #save spot distances
             spot_cols=['type','nuclei_label','nucl_x','nucl_y','spot_id','spot_x','spot_y','spot_r','dist_nearest_id','dist_nearest']
@@ -288,33 +315,46 @@ if(do_finding):
 
         #make histogram of nuclei properties:
         plt.hist(all_nucl_areas, bins=np.arange(np.min(all_nucl_areas), np.max(all_nucl_areas), 50))
-        plt.savefig(base_dir + '/' + folder + '/nuclei_areas_hist.pdf')
+        plt.savefig(cur_work_dir + '/' + str(DAPI_ce_perc) + '_nuclei_areas_hist.pdf')
         plt.clf()
 
         plt.hist(all_nucl_eccentricities, bins=np.arange(np.min(all_nucl_eccentricities), np.max(all_nucl_eccentricities), 0.1))
-        plt.savefig(base_dir + '/' + folder + '/nuclei_ecc_hist.pdf')
+        plt.savefig(cur_work_dir + '/' + str(DAPI_ce_perc)+ '_nuclei_ecc_hist.pdf')
         plt.clf()
 
         plt.hist(all_nucl_solidities, bins=np.arange(np.min(all_nucl_solidities), np.max(all_nucl_solidities), 0.01))
-        plt.savefig(base_dir + '/' + folder + '/nuclei_sol_hist.pdf')
+        plt.savefig(cur_work_dir + '/' + str(DAPI_ce_perc) + '_nuclei_sol_hist.pdf')
         plt.clf()
 
         plt.hist(all_nucl_maj_ax_lens, bins=np.arange(np.min(all_nucl_maj_ax_lens), np.max(all_nucl_maj_ax_lens), 5))
-        plt.savefig(base_dir + '/' + folder + '/nuclei_maj_ax_len_hist.pdf')
+        plt.savefig(cur_work_dir + '/' + str(DAPI_ce_perc) + '_nuclei_maj_ax_len_hist.pdf')
         plt.clf()
+
+    # ** NOTE: spot_dist and blob_th_GFP/RFP are set separately for each folder
+    # if there is > 1 folder listed in spot_counting_paramters.txt, the name of the file below
+    # will contain the spot_dist and blob_th_GFP/RFP for the LAST folder that is processed. **
     spot_df.index=range(len(spot_df))
-    spot_df.to_csv(base_dir + '/all_data.txt', sep='\t')
+    spot_df.to_csv(work_dir + '/'+str(spot_dist)+'_GFP_' +str(blob_th_GFP)+'_RFP_'+str(blob_th_RFP)+'_'+
+                   str(DAPI_ce_perc)+'_all_data.txt', sep='\t')
 
 if(plot_results_hists):
     print("Processing results...")
     #read all data and find valid spots (counting close-by spots as a single spot), get spot counts per nuclei
-    df = pd.read_csv(base_dir + '/all_data.txt', sep='\t', index_col=0)
+    folder=folders[len(folders)-1] #file was saved with parameters for last folder in list
+    last_blob_th_GFP = float(params[folder]['blob_th_GFP'])
+    last_blob_th_RFP = float(params[folder]['blob_th_RFP'])
+    last_spot_dist = int(params[folder]['spot_distance_cutoff'])
+    if (params[folder]['nucl_id_contrast_enh_type'] == 'none'): last_DAPI_ce_perc = 0
+    else: last_DAPI_ce_perc = float(params[folder]['nucl_id_ce_percentile'])
+    df = pd.read_csv(work_dir + '/'+str(last_spot_dist)+'_GFP_' +str(last_blob_th_GFP)+'_RFP_'+str(last_blob_th_RFP)+
+                     '_'+str(last_DAPI_ce_perc)+'_all_data.txt', sep='\t', index_col=0)
+
     df['valid_spot']=0
     df['spot_count']=0
 
     max_spots={}
-    max_spots['RFP']=4
-    max_spots['GFP']=6
+    max_spots['RFP']=6
+    max_spots['GFP']=8
 
     #get spot counts per nuclei, using spot distance cutoff to combine spots
     spot_counts={}
@@ -323,8 +363,16 @@ if(plot_results_hists):
         spot_counts[folder]={}
         cur_df = df[df['folder']==folder]
         spot_dist=int(params[folder]['spot_distance_cutoff'])
+        blob_th_GFP = float(params[folder]['blob_th_GFP'])
+        blob_th_RFP = float(params[folder]['blob_th_RFP'])
+        if (params[folder]['nucl_id_contrast_enh_type'] == 'none'): DAPI_ce_perc=0
+        else: DAPI_ce_perc = float(params[folder]['nucl_id_ce_percentile'])
         nucl_per_spot_count={}
-        for type in df['type'].unique():
+        for type in df['type'].unique(): # type: GFP or RFP
+            if(type == 'GFP'):
+                blob_th = blob_th_GFP
+            else:
+                blob_th = blob_th_RFP
             nucl_per_spot_count[type] = []
             spot_counts[folder][type]=[]
             type_df = cur_df[cur_df['type'] == type]
@@ -333,7 +381,8 @@ if(plot_results_hists):
                 hist_arr=[0,]*max_spots[type]
 
                 #open image to label with number of spots on nuclei
-                img = io.imread(base_dir + '/' + folder + '/' + str(fn) + '_' + type + '_counts_marked.tif')
+                img = io.imread(work_dir + '/' + folder + '/' + str(fn) + '_' + type +'_'+str(spot_dist)+'_' +
+                                str(blob_th)+'_'+str(DAPI_ce_perc)+'_counts_marked.tif')
                 for nucl in fn_df['nuclei_label'].unique():
                     cur_spots = fn_df[fn_df['nuclei_label']==nucl]
 
@@ -365,7 +414,6 @@ if(plot_results_hists):
                         else:
                             hist_arr[num_valid_spots-1]+=1
 
-
                     text_size = 0.8
                     text_c=[0,255,0]
                     text_lw = 1
@@ -374,27 +422,49 @@ if(plot_results_hists):
                                 text_size, text_c, text_lw, cv2.LINE_AA)
                 hist_arr.insert(0,fn)
                 nucl_per_spot_count[type].append(hist_arr)
-                io.imsave(base_dir + '/' + folder + '/' + str(fn) + '_' + type + '_counts_marked_'+str(spot_dist)+'.tif', img)
+                io.imsave(work_dir + '/' + folder + '/' + str(fn) + '_' + type +'_'+str(spot_dist)+'_' +str(blob_th)+
+                          '_'+str(DAPI_ce_perc)+'_counts_marked.tif', img)
+
         #save hist to csv
         for type in df['type'].unique():
+            if (type == 'GFP'):
+                blob_th = blob_th_GFP
+            else:
+                blob_th = blob_th_RFP
             cols=['file_name']
             cols.extend(range(1,max_spots[type]+1))
             df_hist = pd.DataFrame(nucl_per_spot_count[type], columns=cols)
             df_hist=df_hist.sort_values(by='file_name')
-            df_hist.to_csv(base_dir + '/' + folder + '/'+type+'_counts_by_filename.txt', sep='\t')
-    df.to_csv(base_dir + '/all_data_with_counts.txt', sep='\t')
+            df_hist.to_csv(work_dir + '/' + folder + '/' + type+'_'+str(spot_dist)+'_' +str(blob_th)+'_'+
+                           str(DAPI_ce_perc)+'_counts_by_filename.txt', sep='\t')
+    df.to_csv(work_dir + '/'+str(last_spot_dist)+'_GFP_' + str(last_blob_th_GFP) + '_RFP_' + str(last_blob_th_RFP)+'_'+
+              str(last_DAPI_ce_perc)+'_all_data_with_counts.txt', sep='\t')
 
     #plot spot counts per nuclei histogram, for RFP and GFP
     spot_counts_all={}
     for type in df['type'].unique():
         spot_counts_all[type]=[]
     for folder_i, folder in enumerate(folders):
+        spot_dist = int(params[folder]['spot_distance_cutoff'])
+        if (params[folder]['nucl_id_contrast_enh_type'] == 'none'): DAPI_ce_perc=0
+        else: DAPI_ce_perc = float(params[folder]['nucl_id_ce_percentile'])
         for type in spot_counts[folder].keys():
+            if (type == 'GFP'):
+                blob_th = blob_th_GFP
+            else:
+                blob_th = blob_th_RFP
             if(len(spot_counts[folder][type])>0):
                 ret=plt.hist(spot_counts[folder][type], np.arange(0, 8, .25), histtype='step')
-                plt.savefig(base_dir + '/' + folder + '/spot_count_hist_' + type + '_' + folder.replace('/','-') +
-                            '_'+str(spot_dist)+'.pdf')
+                plt.savefig(work_dir + '/' + folder + '/spot_count_hist_' + type + '_' + folder.replace('/','-') +
+                            '_'+str(spot_dist)+ '_' +str(blob_th)+'_'+str(DAPI_ce_perc)+'.pdf')
                 plt.clf()
+                percent=plt.hist(spot_counts[folder][type], np.arange(0, 8, .25),
+                                 weights=np.ones(len(spot_counts[folder][type])) / len(spot_counts[folder][type])) ### new added
+                plt.gca().yaxis.set_major_formatter(PercentFormatter(1)) #### new added
+                plt.ylim(0,1)
+                plt.savefig(work_dir + '/' + folder + '/spot_perc_hist_' + type + '_' + folder.replace('/','-') +
+                            '_'+str(spot_dist)+ '_' +str(blob_th)+'_'+str(DAPI_ce_perc)+'.pdf')###### new added
+                plt.clf()####### new added
                 spot_counts_all[type].extend(spot_counts[folder][type])
             else:
                 print("No count data for ", folder, " ", type)
@@ -407,13 +477,21 @@ if(plot_results_hists):
 
     #plot for all spots, (not only 'valid' spots), the distance-between-spots histogram
     for folder_i, folder in enumerate(folders):
+        spot_dist = int(params[folder]['spot_distance_cutoff'])
+        if (params[folder]['nucl_id_contrast_enh_type'] == 'none'): DAPI_ce_perc=0
+        else: DAPI_ce_perc = float(params[folder]['nucl_id_ce_percentile'])
         cur_df = df[df['folder']==folder]
         for type in df['type'].unique():
+            if (type == 'GFP'):
+                blob_th = blob_th_GFP
+            else:
+                blob_th = blob_th_RFP
             type_df = cur_df[cur_df['type'] == type]
             type_df = type_df[type_df['dist_nearest']>0]
             if(len(type_df)>0):
                 ret=plt.hist(type_df['dist_nearest'], bins=np.arange(np.min(type_df['dist_nearest']), np.max(type_df['dist_nearest']), 1))
-                plt.savefig(base_dir + '/' + folder + '/spot_dist_hist_'+type+'_'+folder.replace('/','-')+'.pdf')
+                plt.savefig(work_dir + '/' + folder + '/spot_dist_hist_'+type+'_'+folder.replace('/', '-') +
+                            '_'+str(spot_dist)+'_' +str(blob_th)+'_'+str(DAPI_ce_perc)+'.pdf')
                 plt.clf()
             else:
                 print("No distance data for ", folder, " ", type)

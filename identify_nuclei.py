@@ -15,6 +15,7 @@ import warnings
 from skimage.morphology import disk, binary_erosion
 from skimage.filters import rank
 from skimage.exposure import equalize_adapthist, rescale_intensity
+import ij_thresholds as ij_th
 
 warnings.filterwarnings('ignore', message='.+ is a low contrast image', category=UserWarning)
 
@@ -42,7 +43,7 @@ class identify_nuclei_class:
         self.ws_gauss_filter_size = 10
         self.ws_local_min_distance = 10
         self.remove_edge=False
-        self.threshold_type='otsu'
+        self.threshold_type='otsu' #'li' or 'otsu' or 'yen' or 'local_otsu'
         self.local_th_disk_size=80
         self.two_pass_th=False
         self.two_pass_ratio_lim=0.75
@@ -60,12 +61,17 @@ class identify_nuclei_class:
         self.outline_img = []
         self.proc_nuclei_image = []
         self.full_background_mask = []
+        self.orig_image_mask = []
+
 
     def do_rescale(self, img, perc):
-        ll = perc
-        ul = 100 - perc
-        pmin, pmax = np.percentile(img, (ll, ul))
-        return exposure.rescale_intensity(img, in_range=(int(pmin), int(pmax)))
+        if(perc > 0):
+            ll = perc
+            ul = 100 - perc
+            pmin, pmax = np.percentile(img, (ll, ul))
+            return exposure.rescale_intensity(img, in_range=(int(pmin), int(pmax)))
+        else:
+            return img
 
     def filter_min_area(self, props, mask, min_area):
         for prop in props:
@@ -159,9 +165,12 @@ class identify_nuclei_class:
         if (self.threshold_type == 'local_otsu'):
             local_otsu = filters.rank.otsu(nuclei_image, disk(self.local_th_disk_size))
             image_mask = nuclei_image > local_otsu
-        else:  # otsu is default
+        elif(self.threshold_type == 'li'):
+            image_mask = nuclei_image > ij_th.ImageJ_Li_threshold(nuclei_image) #filters.threshold_li(nuclei_image,tolerance=0.5)
+        elif(self.threshold_type == 'yen'):
+            image_mask = nuclei_image > filters.threshold_yen(nuclei_image)
+        else: #otsu is default
             image_mask = nuclei_image > filters.threshold_otsu(nuclei_image)
-
         # from sklearn.cluster import KMeans
         # est = KMeans(n_clusters=3)
         # arr = nuclei_image.flatten()
@@ -194,7 +203,13 @@ class identify_nuclei_class:
 
             if (self.threshold_type == 'local_otsu'):
                 local_otsu = filters.rank.otsu(nuclei_image_rem, disk(self.local_th_disk_size))
-                image_mask = nuclei_image > local_otsu
+                nuclei_image_rem_mask = nuclei_image > local_otsu
+            elif (self.threshold_type == 'li'):
+                li = ij_th.ImageJ_Li_threshold(nuclei_image_rem) #filters.threshold_li(nuclei_image_rem,tolerance=0.5)
+                nuclei_image_rem_mask = nuclei_image > li
+            elif (self.threshold_type == 'yen'):
+                yen=filters.threshold_yen(nuclei_image_rem)
+                nuclei_image_rem_mask = nuclei_image > yen
             else:  # otsu is default
                 global_otsu = filters.threshold_otsu(nuclei_image_rem)
                 nuclei_image_rem_mask = nuclei_image > global_otsu
@@ -217,6 +232,7 @@ class identify_nuclei_class:
             if (save_dir):
                 io.imsave(save_dir + '/nuclei_thresh2pass.tif', 255 * image_mask.astype('uint8'))
 
+        orig_image_mask = image_mask.copy()
         image_mask = ndimage.binary_fill_holes(image_mask)
         
         labeled_clusters, num_clusters = ndimage.label(image_mask, structure=self.labeling_structure)
@@ -324,6 +340,7 @@ class identify_nuclei_class:
         self.display_img = displ_img
         self.proc_nuclei_image = nuclei_image
         self.nuclei_mask = labeled_mask
+        self.orig_image_mask = orig_image_mask
 
 
 #################
