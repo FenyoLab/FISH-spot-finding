@@ -90,8 +90,8 @@ plot_results_hists=True #set to True to make plots of the spot-finding results
 base_dir=input()
 work_dir=input()
 
-#base_dir="/Volumes/Seagate Backup Plus Drive/Nazario/testing"
-#work_dir="/Volumes/Seagate Backup Plus Drive/Nazario/testing_results"
+#base_dir="/Volumes/Seagate Backup Plus Drive/Nazario/testing1"
+#work_dir="/Volumes/Seagate Backup Plus Drive/Nazario/testing1_results"
 
 params = read_parameters_from_file(base_dir + '/spot_counting_parameters.txt')
 folders=list(params.keys())
@@ -291,14 +291,14 @@ if(do_finding):
                                   '.tif', cur_img_displ)
 
                 if(meas_img_i==0):
-                    if(save_extra_images):
-                        io.imsave(cur_work_dir + '/' + GFP_file[:-4]+'_'+str(spot_dist)+'_' +str(blob_th)+'_'+
+                    #if(save_extra_images):
+                    io.imsave(cur_work_dir + '/' + GFP_file[:-4]+'_'+str(spot_dist)+'_' +str(blob_th)+'_'+
                                   str(DAPI_ce_perc)+'_blob_marked.tif', meas_img_displ)
                     io.imsave(cur_work_dir + '/' + GFP_file[:-4] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+
                               str(DAPI_ce_perc)+'_counts_marked.tif', meas_img_displ2)
                 else:
-                    if (save_extra_images):
-                        io.imsave(cur_work_dir + '/' + RFP_file[:-4] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+
+                    #if (save_extra_images):
+                    io.imsave(cur_work_dir + '/' + RFP_file[:-4] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+
                                   str(DAPI_ce_perc)+'_blob_marked.tif', meas_img_displ)
                     io.imsave(cur_work_dir + '/' + RFP_file[:-4] + '_'+str(spot_dist)+'_' +str(blob_th)+'_'+
                               str(DAPI_ce_perc)+'_counts_marked.tif', meas_img_displ2)
