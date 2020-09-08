@@ -349,12 +349,12 @@ if(do_finding):
                            str(rescale_intensity_perc[1])+'_'+str(DAPI_ce_perc)
                 if(meas_img_i==0):
                     #if(save_extra_images):
-                    io.imsave(cur_work_dir + '/' + GFP_file[:-4]+'_'+params_txt+'_blob_marked.tif', meas_img_displ)
-                    io.imsave(cur_work_dir + '/' + GFP_file[:-4]+'_'+params_txt+'_counts_marked.tif', meas_img_displ2)
+                    io.imsave(cur_work_dir + '/' + GFP_file[:-4]+'_'+labels[meas_img_i]+'_'+params_txt+'_blob_marked.tif', meas_img_displ)
+                    io.imsave(cur_work_dir + '/' + GFP_file[:-4]+'_'+labels[meas_img_i]+'_'+params_txt+'_counts_marked.tif', meas_img_displ2)
                 else:
                     #if (save_extra_images):
-                    io.imsave(cur_work_dir + '/' + RFP_file[:-4] + '_'+params_txt+'_blob_marked.tif', meas_img_displ)
-                    io.imsave(cur_work_dir + '/' + RFP_file[:-4] + '_'+params_txt+'_counts_marked.tif', meas_img_displ2)
+                    io.imsave(cur_work_dir + '/' + RFP_file[:-4] +'_'+labels[meas_img_i]+'_'+params_txt+'_blob_marked.tif', meas_img_displ)
+                    io.imsave(cur_work_dir + '/' + RFP_file[:-4] +'_'+labels[meas_img_i]+'_'+params_txt+'_counts_marked.tif', meas_img_displ2)
 
             #save spot distances
             spot_cols=['file_name','type','nuclei_label','nucl_x','nucl_y','spot_id','spot_x','spot_y','spot_r','dist_nearest_id','dist_nearest']
@@ -437,11 +437,7 @@ if(plot_results_hists):
                 hist_arr=[0,]*max_spots[type]
 
                 #open image to label with number of spots on nuclei
-                if(new_folder_stucture):
-                    type_str=''
-                else:
-                    type_str='_'+type
-                img = io.imread(work_dir + '/' + folder + '/' + str(fn) + type_str +'_'+str(spot_dist)+'_' +
+                img = io.imread(work_dir + '/' + folder + '/' + str(fn) + '_'+type +'_'+str(spot_dist)+'_' +
                                 str(blob_th)+'_'+str(rescale_intensity_perc[0])+'_'+str(rescale_intensity_perc[1])+'_'+
                                 str(DAPI_ce_perc)+'_counts_marked.tif')
                 for nucl in fn_df['nuclei_label'].unique():
