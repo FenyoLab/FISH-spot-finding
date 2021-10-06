@@ -121,7 +121,7 @@ def reshape_to_rgb(grey_img):
     ret_img[:, :, 2] = grey_img_
     return ret_img
 
-save_extra_images=True # this is for spot detection, set to False unless testing
+save_extra_images=False # this is for spot detection, set to False unless testing
 temp_dir='' # this is for the nuclei detection, leave blank unless testing
 do_finding=True #set to True to find spots
 plot_results_hists=True #set to True to make plots of the spot-finding results
@@ -163,7 +163,10 @@ if(do_finding):
         rescale_intensity_perc_GFP = [params[folder]['GFP_ce_percentile_ll'],params[folder]['GFP_ce_percentile_ul']]
         rescale_intensity_perc_RFP = [params[folder]['RFP_ce_percentile_ll'],params[folder]['RFP_ce_percentile_ul']]
 
-        count_from_0 = int(params[folder]['count_from_0'])
+        if('count_from_0' in params[folder]):
+            count_from_0 = int(params[folder]['count_from_0'])
+        else:
+            count_from_0 = 0
 
         #open 3 files, one for each channel
         if(new_folder_stucture):
@@ -428,7 +431,11 @@ if(plot_results_hists):
         blob_rescl_perc_RFP = [params[folder]['RFP_ce_percentile_ll'],params[folder]['RFP_ce_percentile_ul']]
         if (params[folder]['nucl_id_contrast_enh_type'] == 'none'): DAPI_ce_perc=0
         else: DAPI_ce_perc = float(params[folder]['nucl_id_ce_percentile'])
-        count_from_0 = int(params[folder]['count_from_0'])
+        if ('count_from_0' in params[folder]):
+            count_from_0 = int(params[folder]['count_from_0'])
+        else:
+            count_from_0 = 0
+
         nucl_per_spot_count={}
         for type in df['type'].unique(): # type: GFP or RFP
             if(type == 'GFP'):
@@ -531,7 +538,10 @@ if(plot_results_hists):
 
         blob_rescl_perc_GFP = [params[folder]['GFP_ce_percentile_ll'], params[folder]['GFP_ce_percentile_ul']]
         blob_rescl_perc_RFP = [params[folder]['RFP_ce_percentile_ll'], params[folder]['RFP_ce_percentile_ul']]
-        count_from_0 = int(params[folder]['count_from_0'])
+        if ('count_from_0' in params[folder]):
+            count_from_0 = int(params[folder]['count_from_0'])
+        else:
+            count_from_0 = 0
 
         for type in spot_counts[folder].keys():
             if (type == 'GFP'):
