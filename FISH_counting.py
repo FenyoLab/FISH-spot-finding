@@ -131,8 +131,10 @@ new_folder_stucture=True  #set to True if analyzing images directly from the mic
 base_dir=input()
 work_dir=input()
 
-#base_dir= "/Volumes/Seagate Backup Plus Drive/Somayeh" #"/Volumes/Seagate Backup Plus Drive/Nazario/testing4"
-#work_dir= "/Volumes/Seagate Backup Plus Drive/Somayeh/results" #"/Volumes/Seagate Backup Plus Drive/Nazario/testing4_results" #
+#base_dir= "/Volumes/Seagate Backup Plus Drive/Somayeh"
+#base_dir= "/Volumes/Seagate Backup Plus Drive/Nazario/testing4"
+#work_dir= "/Volumes/Seagate Backup Plus Drive/Somayeh/results"
+#work_dir= "/Volumes/Seagate Backup Plus Drive/Nazario/testing4_results"
 
 params = read_parameters_from_file(base_dir + '/spot_counting_parameters.txt')
 folders=list(params.keys())
@@ -160,6 +162,8 @@ if(do_finding):
 
         rescale_intensity_perc_GFP = [params[folder]['GFP_ce_percentile_ll'],params[folder]['GFP_ce_percentile_ul']]
         rescale_intensity_perc_RFP = [params[folder]['RFP_ce_percentile_ll'],params[folder]['RFP_ce_percentile_ul']]
+
+        count_from_0 = int(params[folder]['count_from_0'])
 
         #open 3 files, one for each channel
         if(new_folder_stucture):
@@ -340,6 +344,9 @@ if(do_finding):
                                     0.4, [0,255,0], 1, cv2.LINE_AA)
 
                     # add to running spot list
+                    if(count_from_0 and len(nucl_spots)==0): # add nuclei that have zero spots, if desired
+                        nucl_spots.append([fnames[meas_img_i],labels[meas_img_i],prop.label,nucl_x,nucl_y,-1,0,0,0,-1,0])
+
                     spot_list.extend(nucl_spots)
                     if (save_extra_images):
                         io.imsave(cur_work_dir + '/nuclei/final_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
@@ -421,6 +428,7 @@ if(plot_results_hists):
         blob_rescl_perc_RFP = [params[folder]['RFP_ce_percentile_ll'],params[folder]['RFP_ce_percentile_ul']]
         if (params[folder]['nucl_id_contrast_enh_type'] == 'none'): DAPI_ce_perc=0
         else: DAPI_ce_perc = float(params[folder]['nucl_id_ce_percentile'])
+        count_from_0 = int(params[folder]['count_from_0'])
         nucl_per_spot_count={}
         for type in df['type'].unique(): # type: GFP or RFP
             if(type == 'GFP'):
@@ -434,7 +442,7 @@ if(plot_results_hists):
             type_df = cur_df[cur_df['type'] == type]
             for fn in type_df['file_name'].unique():
                 fn_df = type_df[type_df['file_name']==fn]
-                hist_arr=[0,]*max_spots[type]
+                hist_arr=[0,]*(max_spots[type]+1)
 
                 #open image to label with number of spots on nuclei
                 img = io.imread(work_dir + '/' + folder + '/' + str(fn) + '_'+type +'_'+str(spot_dist)+'_' +
@@ -443,33 +451,39 @@ if(plot_results_hists):
                 for nucl in fn_df['nuclei_label'].unique():
                     cur_spots = fn_df[fn_df['nuclei_label']==nucl]
 
-                    valid_spot_list = []
-                    for row_i,row in enumerate(cur_spots.iterrows()):
-                        data = row[1]
-                        if(row_i > 0):
-                            drop_spot=False
-                            for valid_spot in valid_spot_list:
-                                d=((data['spot_x']-valid_spot[1])**2+(data['spot_y']-valid_spot[2])**2)**0.5
-                                if(d <= spot_dist):
-                                    drop_spot=True
-                                    break
-                            if(not drop_spot):
+                    if(len(cur_spots)==1 and cur_spots.iloc[0]['spot_id']==-1):
+                        num_valid_spots = 0 # no spots found for this nuclei
+                    else:
+                        valid_spot_list = []
+                        for row_i,row in enumerate(cur_spots.iterrows()):
+                            data = row[1]
+                            if(row_i > 0):
+                                drop_spot=False
+                                for valid_spot in valid_spot_list:
+                                    d=((data['spot_x']-valid_spot[1])**2+(data['spot_y']-valid_spot[2])**2)**0.5
+                                    if(d <= spot_dist):
+                                        drop_spot=True
+                                        break
+                                if(not drop_spot):
+                                    valid_spot_list.append((row[0], data['spot_x'], data['spot_y']))
+                            else:
                                 valid_spot_list.append((row[0], data['spot_x'], data['spot_y']))
-                        else:
-                            valid_spot_list.append((row[0], data['spot_x'], data['spot_y']))
-                    #set those valid to 1
-                    for valid_spot in valid_spot_list:
-                        df.at[valid_spot[0], 'valid_spot'] = 1
 
-                    num_valid_spots = len(valid_spot_list)
-                    df['spot_count']=np.where(df['nuclei_label']==nucl, num_valid_spots, df['spot_count'])
+                        # set those valid to 1
+                        for valid_spot in valid_spot_list:
+                            df.at[valid_spot[0], 'valid_spot'] = 1
+
+                        num_valid_spots = len(valid_spot_list)
+
+                    for row_i, row in enumerate(cur_spots.iterrows()):
+                        df.at[row[0], 'spot_count'] = num_valid_spots
+
                     spot_counts[folder][type].append(num_valid_spots)
 
-                    if(num_valid_spots > 0):
-                        if(num_valid_spots > max_spots[type]):
-                            hist_arr[max_spots[type]-1]+=1
-                        else:
-                            hist_arr[num_valid_spots-1]+=1
+                    if(num_valid_spots > max_spots[type]):
+                        hist_arr[max_spots[type]]+=1
+                    else:
+                        hist_arr[num_valid_spots]+=1
 
                     text_size = 0.8
                     text_c=[0,255,0]
@@ -491,9 +505,11 @@ if(plot_results_hists):
             else:
                 blob_th = blob_th_RFP
                 rescale_intensity_perc = blob_rescl_perc_RFP
-            cols=['file_name']
-            cols.extend(range(1,max_spots[type]+1))
+            cols = ['file_name']
+            cols.extend(range(0, max_spots[type] + 1))
             df_hist = pd.DataFrame(nucl_per_spot_count[type], columns=cols)
+            if(not count_from_0): # drop the zero column
+                df_hist.drop(labels=0,axis=1,inplace=True)
             df_hist=df_hist.sort_values(by='file_name')
             df_hist.to_csv(work_dir + '/' + folder + '/' + type+'_'+str(spot_dist)+'_' +str(blob_th)+'_'+
                            str(rescale_intensity_perc[0]) + '_'+str(rescale_intensity_perc[1])+'_'+
@@ -515,6 +531,7 @@ if(plot_results_hists):
 
         blob_rescl_perc_GFP = [params[folder]['GFP_ce_percentile_ll'], params[folder]['GFP_ce_percentile_ul']]
         blob_rescl_perc_RFP = [params[folder]['RFP_ce_percentile_ll'], params[folder]['RFP_ce_percentile_ul']]
+        count_from_0 = int(params[folder]['count_from_0'])
 
         for type in spot_counts[folder].keys():
             if (type == 'GFP'):
@@ -524,12 +541,16 @@ if(plot_results_hists):
                 blob_th = blob_th_RFP
                 rescale_intensity_perc = blob_rescl_perc_RFP
             if(len(spot_counts[folder][type])>0):
-                ret=plt.hist(spot_counts[folder][type], np.arange(0, 8, .25), histtype='step')
+                if(count_from_0):
+                    min_=0
+                else:
+                    min_=1
+                ret=plt.hist(spot_counts[folder][type], np.arange(min_, 8, .25), histtype='step')
                 plt.savefig(work_dir + '/' + folder + '/spot_count_hist_' + type + '_' + folder.replace('/','-') +
                             '_'+str(spot_dist)+ '_' +str(blob_th)+'_'+str(rescale_intensity_perc[0]) + '_'+
                             str(rescale_intensity_perc[1])+'_'+str(DAPI_ce_perc)+'.pdf')
                 plt.clf()
-                percent=plt.hist(spot_counts[folder][type], np.arange(0, 8, .25),
+                percent=plt.hist(spot_counts[folder][type], np.arange(min_, 8, .25),
                                  weights=np.ones(len(spot_counts[folder][type])) / len(spot_counts[folder][type]))
                 plt.gca().yaxis.set_major_formatter(PercentFormatter(1))
                 plt.ylim(0,1)

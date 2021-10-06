@@ -294,7 +294,7 @@ class identify_nuclei_class:
                 self.save_maxima(distances, labeled_clusters, 1, save_dir + '/maxima_gauss.tif')
                 self.save_maxima(distances, labeled_clusters, self.ws_local_min_distance, save_dir + '/maxima_guass_dist.tif')
 
-            maxima = peak_local_max(distances, min_distance=self.ws_local_min_distance, indices=False, exclude_border=False)
+            maxima = peak_local_max(distances, min_distance=int(self.ws_local_min_distance), indices=False, exclude_border=False)
             spots, n = mh.label(maxima)
             surface = distances.max() - distances
             areas = mh.cwatershed(surface, spots)
