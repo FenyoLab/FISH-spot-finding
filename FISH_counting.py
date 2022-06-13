@@ -14,7 +14,8 @@ from skimage import io, exposure, feature, img_as_ubyte, segmentation, draw, fil
 import identify_nuclei as idn
 import matplotlib.pyplot as plt
 import numpy as np
-from cv2 import cv2
+#from cv2 import cv2
+import cv2
 import pandas as pd
 from matplotlib.ticker import PercentFormatter ### new added
 np.warnings.filterwarnings('ignore')
