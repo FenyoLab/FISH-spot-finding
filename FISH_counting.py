@@ -10,8 +10,8 @@ For each image in folder:
 
 import glob
 import os
-from skimage import io, exposure, feature, img_as_ubyte, segmentation, draw, filters, morphology
-import identify_nuclei as idn
+from skimage import io, exposure, feature, img_as_ubyte, segmentation, draw, morphology
+from nucl_id import identify_nuclei as idn
 import matplotlib.pyplot as plt
 import numpy as np
 #from cv2 import cv2
@@ -19,6 +19,8 @@ import cv2
 import pandas as pd
 from matplotlib.ticker import PercentFormatter ### new added
 np.warnings.filterwarnings('ignore')
+
+from util import helpers
 
 def get_files_from_dirs(start_dir):
     # gets list of folders in start_dir
@@ -53,75 +55,6 @@ def get_files_from_dirs(start_dir):
 
     return file_list
 
-def do_rescale(img, ll_perc, ul_perc):
-    ll = ll_perc
-    ul = 100 - ul_perc
-    pmin, pmax = np.percentile(img, (ll, ul))
-    return exposure.rescale_intensity(img, in_range=(int(pmin), int(pmax)))
-
-def read_parameters_from_file(file_name):
-    params = {}
-
-    df = pd.read_table(file_name, sep='\t')
-    for row in df.iterrows():
-        row = row[1]
-        subfolder = row['Folder_name']
-        params[subfolder]={}
-        for col in df.columns:
-            if(col != subfolder):
-                params[subfolder][col]=row[col]
-    return params
-
-def get_props_and_label(img, props, text_c=[0, 255, 0]):
-    areas=[]
-    eccentricities=[]
-    solidities=[]
-    ax_lens=[]
-    text_size=0.6
-    text_lw=2
-    label_w = 260  # note w/h depend on text size/lw, and length of string used to label (this is hard-coded here)
-    label_h = 20
-
-    # label each object in outline image with its area, eccentricity and solidity
-    for prop in props:
-        r, c = prop.centroid
-        areas.append(prop.area)
-        eccentricities.append(prop.eccentricity)
-        solidities.append(prop.solidity)
-        ax_lens.append(prop.major_axis_length)
-        label = (str(prop.label)+': a=' + str(round(prop.area, 0)) +
-                 ' e=' + str(round(prop.eccentricity, 2)) +
-                 ' s=' + str(round(prop.solidity, 2)))
-        if ((r + label_h) >= len(outline_img)): r_pos = r - ((r + label_h) - len(outline_img))
-        else: r_pos = r
-        if ((c + label_w) >= len(outline_img[0])): c_pos = c - ((c + label_w) - len(outline_img[0]))
-        else: c_pos = c
-        cv2.putText(img,label,(int(c_pos),int(r_pos)),cv2.FONT_HERSHEY_SIMPLEX,
-                    text_size,text_c,text_lw,cv2.LINE_AA)
-
-    return (img, areas, eccentricities, solidities, ax_lens)
-
-def draw_dot_on_img(draw_img, row, col, color, thickness=0):
-    row = int(row)
-    col = int(col)
-    if(thickness==0):
-        draw_img[row][col] = color
-    else:
-        for cur_r in range(row-thickness, row+thickness+1, 1):
-            for cur_c in range(col-thickness, col+thickness+1,1):
-                if(cur_r >=0 and cur_c >= 0 and cur_r < len(draw_img) and cur_c < len(draw_img[0])):
-                    draw_img[cur_r][cur_c] = color
-
-def reshape_to_rgb(grey_img):
-    #makes single color channel image into rgb
-    ret_img = np.zeros(shape=[grey_img.shape[0],grey_img.shape[1],3], dtype='uint8')
-    grey_img_=img_as_ubyte(grey_img)
-
-    ret_img[:,:,0]=grey_img_
-    ret_img[:, :, 1] = grey_img_
-    ret_img[:, :, 2] = grey_img_
-    return ret_img
-
 save_extra_images=False # this is for spot detection, set to False unless testing
 temp_dir='' # this is for the nuclei detection, leave blank unless testing
 do_finding=True #set to True to find spots
@@ -137,7 +70,7 @@ work_dir=input()
 #work_dir= "/Volumes/Seagate Backup Plus Drive/Somayeh/results"
 #work_dir= "/Volumes/Seagate Backup Plus Drive/Nazario/testing4_results"
 
-params = read_parameters_from_file(base_dir + '/spot_counting_parameters.txt')
+params = helpers.read_parameters_from_file(base_dir + '/spot_counting_parameters.txt')
 folders=list(params.keys())
 if(do_finding):
     spot_df=pd.DataFrame()
@@ -247,7 +180,7 @@ if(do_finding):
                       nucl_id.orig_image_mask.astype('uint8')*255)
 
             # label each object in outline image with its area, eccentricity and solidity
-            (outline_img, areas, eccentricities, solidities, maj_ax_lens) = get_props_and_label(outline_img, nucl_id.nuclei_props)
+            (outline_img, areas, eccentricities, solidities, maj_ax_lens) = helpers.get_props_and_label(outline_img, nucl_id.nuclei_props)
             all_nucl_areas.extend(areas)
             all_nucl_eccentricities.extend(eccentricities)
             all_nucl_solidities.extend(solidities)
@@ -280,13 +213,13 @@ if(do_finding):
                     cur_img = meas_img[min_row:max_row,min_col:max_col]
                     nucl_y,nucl_x = prop.centroid
 
-                    cur_img_displ = reshape_to_rgb(cur_img)
+                    cur_img_displ = helpers.reshape_to_rgb(cur_img)
                     if(save_extra_images):
                         io.imsave(cur_work_dir + '/nuclei/orig_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
                                   '_' + labels[meas_img_i] + '.tif', cur_img_displ)
 
-                    cur_img = do_rescale(cur_img, rescale_intensity_perc[0],rescale_intensity_perc[1])
-                    cur_img_displ = reshape_to_rgb(cur_img)
+                    cur_img = helpers.do_rescale(cur_img, rescale_intensity_perc[0],rescale_intensity_perc[1])
+                    cur_img_displ = helpers.reshape_to_rgb(cur_img)
                     if (save_extra_images):
                         io.imsave(cur_work_dir + '/nuclei/rescale_int_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
                             '_' + labels[meas_img_i] + '.tif', cur_img_displ)
@@ -295,7 +228,7 @@ if(do_finding):
                         # apply white top hat to subtract background/spots below a minimum size
                         cur_img = morphology.white_tophat(cur_img, selem=morphology.disk(params[folder]['tophat_disk_size']), )
                         cur_img = exposure.rescale_intensity(cur_img)
-                        cur_img_displ = reshape_to_rgb(cur_img)
+                        cur_img_displ = helpers.reshape_to_rgb(cur_img)
                         if (save_extra_images):
                             io.imsave(cur_work_dir + '/nuclei/white_th_' + nucl_outline_file[:-4] + "_" + str(prop.label) +
                                       '_' + labels[meas_img_i] + '.tif', cur_img_displ)

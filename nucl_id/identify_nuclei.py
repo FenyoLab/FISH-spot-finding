@@ -95,7 +95,10 @@ class identify_nuclei_class:
                     mask[c[0],c[1]] = False
 
     def save_maxima(self, distances_, labeled_clusters_, min_dist, save_file):
-        maxima_ = peak_local_max(distances_, min_distance=min_dist, indices=False, exclude_border=False)
+        peak_idx = peak_local_max(distances_, min_distance=int(min_dist), exclude_border=False)
+        maxima_ = np.zeros_like(distances_, dtype=bool)
+        maxima_[tuple(peak_idx.T)] = True
+
         maxima_ = maxima_.astype('uint8') * 255
         labeled_mask_ = labeled_clusters_ > 0
         labeled_display_ = labeled_clusters_ * labeled_mask_
@@ -294,7 +297,10 @@ class identify_nuclei_class:
                 self.save_maxima(distances, labeled_clusters, 1, save_dir + '/maxima_gauss.tif')
                 self.save_maxima(distances, labeled_clusters, self.ws_local_min_distance, save_dir + '/maxima_guass_dist.tif')
 
-            maxima = peak_local_max(distances, min_distance=int(self.ws_local_min_distance), indices=False, exclude_border=False)
+            peak_idx = peak_local_max(distances, min_distance=int(self.ws_local_min_distance), exclude_border=False)
+            maxima = np.zeros_like(distances, dtype=bool)
+            maxima[tuple(peak_idx.T)] = True
+
             spots, n = mh.label(maxima)
             surface = distances.max() - distances
             areas = mh.cwatershed(surface, spots)
