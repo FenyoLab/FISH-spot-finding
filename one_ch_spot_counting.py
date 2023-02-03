@@ -16,6 +16,8 @@ from util import helpers
 import warnings
 import glob
 import cv2
+from read_roi import read_roi_zip
+from read_roi import read_roi_file
 import matplotlib.pyplot as plt
 from nucl_id import identify_nuclei as idn
 warnings.filterwarnings('ignore', message='.+ is a low contrast image', category=UserWarning)
@@ -131,8 +133,148 @@ def detect_blobs(meas_img,
 
     return nucl_spots
 
+def identify_nuclei_with_rois(rois, id_params):
+    pass
+
+def count_spots_roi(file_name, input_folder, output_folder, params,
+                spot_ch=0, nucl_ch=2, color_ch_index=-1,
+                save_extra_images=False, nucl_id_dir=''):
+    if (params[input_folder]['nucl_id_contrast_enh_type'] == 'none'):
+        DAPI_ce_perc = 0
+    else:
+        DAPI_ce_perc = float(params[input_folder]['nucl_id_ce_percentile'])
+
+    rescale_intensity_perc = [params[input_folder]['ce_percentile_ll'], params[input_folder]['ce_percentile_ul']]
+
+    if ('count_from_0' in params[input_folder]):
+        count_from_0 = int(params[input_folder]['count_from_0'])
+    else:
+        count_from_0 = 0
+
+    blob_th = float(params[input_folder]['blob_th'])
+    spot_dist = int(params[input_folder]['spot_distance_cutoff'])
+    if(params[input_folder]['white_tophat']):
+        th_disk_size=params[input_folder]['tophat_disk_size']
+    else:
+        th_disk_size=0
+
+    # load file - it is a 3D z-stack
+    full_stack = io.imread(file_name)
+
+    file_loc = os.path.split(file_name)[0]
+    file_root = os.path.split(file_name)[1]
+    base_file_name = os.path.splitext(file_root)[0]
+    nucl_outline_file = base_file_name + '_nucl.tif'
+    roi_file = f"{file_loc}/{base_file_name}_RoiSet.zip"
+
+    if(len(full_stack.shape)>3):
+        if(color_ch_index==-1):
+            GFP_img = np.amax(full_stack[:, :, :, spot_ch], 0)
+            DAPI_img = np.amax(full_stack[:, :, :, nucl_ch], 0)
+        elif(color_ch_index==1):
+            GFP_img = np.amax(full_stack[:, spot_ch, :, :], 0)
+            DAPI_img = np.amax(full_stack[:, nucl_ch, :, :], 0)
+        else:
+            print("Error: unsuppored color ch index provided.")
+    else:
+        DAPI_img = np.round(np.mean(full_stack, 0)).astype(full_stack.dtype)
+        GFP_img = np.amax(full_stack, 0)
+
+    DAPI_img = exposure.rescale_intensity(DAPI_img)
+    GFP_img = exposure.rescale_intensity(GFP_img)
+
+    DAPI_img=img_as_ubyte(DAPI_img)
+    # GFP_img = img_as_ubyte(GFP_img)
+
+    # load the ROIs
+    if (roi_file.endswith('roi')):
+        roi_list = read_roi_file(roi_file)
+    elif (roi_file.endswith('zip')):
+        roi_list = read_roi_zip(roi_file)
+
+    (roi_mask, err) = helpers.make_mask_from_roi(roi_list, DAPI_img.shape)
+
+    # for each ROI, identify the nuclei inside it from DAPI channel
+    # make a list of roi props (full cell)
+    # nuclei props (identified nuclei within each roi from DAPI channel)
+    # cyto props (roi with identified nuclei removed)
+    # (each cell matched by ordering in the lists)
+
+    # TODO: STOPPED HERE!!
+    (roi_props,
+     cyto_props,
+     nuclei_props) = identify_nuclei_with_rois(roi_mask, (params[input_folder]['nucl_id_contrast_enh_type'],
+                                                          params[input_folder]['nucl_id_ce_percentile'],
+                                                          'median',
+                                                          params[input_folder]['nucl_id_med_filter_size'],
+                                                          params[input_folder]['nucl_id_th']))
+
+    # find spots: use full roi to find spots, then subset using nuclei and ctyo masks
+    # output spot counts for each
+
+    meas_img = GFP_img
+
+    # mark ROIs
+    meas_img_displ = segmentation.mark_boundaries(meas_img,
+                                                  #(nucl_id.nuclei_mask * nucl_id.labeled_clusters),
+                                                  color=[1, 0, 0],
+                                                  mode='inner')
+    meas_img_displ = img_as_ubyte(meas_img_displ)
+    meas_img_displ2 = img_as_ubyte(meas_img_displ).copy()
+
+    if (save_extra_images):
+        extra_img_dir = output_folder + '/nuclei'
+    else:
+        extra_img_dir = ''
+
+    for prop in nuclei_props:
+        # detect blobs for each nuclei
+        cur_spot_list = detect_blobs(meas_img,
+                                     meas_img_displ,
+                                     prop,
+                                     th_disk_size,
+                                     rescale_intensity_perc,
+                                     (float(params[input_folder]['blob_min_sigma']),
+                                      float(params[input_folder]['blob_max_sigma']),
+                                      int(params[input_folder]['blob_num_sigma']),
+                                      blob_th,
+                                      float(params[input_folder]['blob_overlap'])),
+                                     count_from_0,
+                                     nucl_outline_file[:-4],
+                                     extra_img_dir)
+        spot_list.extend(cur_spot_list)
+
+    params_txt = f"d{str(spot_dist)}_th{str(blob_th)}_resc{str(rescale_intensity_perc[0])}_{str(rescale_intensity_perc[1])}"
+    io.imsave(f"{output_folder}/{base_file_name}_{params_txt}_blob_marked.tif", meas_img_displ)
+    io.imsave(f"{output_folder}/{base_file_name}_{params_txt}_counts_marked.tif", meas_img_displ2)
+
+    # save spot distances
+    spot_cols = ['nuclei_label',
+                 'nucl_x',
+                 'nucl_y',
+                 'spot_id',
+                 'spot_x',
+                 'spot_y',
+                 'spot_r',
+                 'dist_nearest_id',
+                 'dist_nearest']
+
+    cur_spot_df = pd.DataFrame(spot_list, columns=spot_cols)
+    cur_spot_df['folder'] = input_folder
+    cur_spot_df['file_name'] = file_root
+    ext_cols = ['folder', 'file_name']
+    ext_cols.extend(spot_cols)
+    cur_spot_df = cur_spot_df[ext_cols]
+
+    return (areas,
+            eccentricities,
+            solidities,
+            maj_ax_lens,
+            cur_spot_df)
+
+
 def count_spots(file_name, input_folder, output_folder, params,
-                spot_ch=0, nucl_ch=2,
+                spot_ch=0, nucl_ch=2, color_ch_index=-1,
                 save_extra_images=False, nucl_id_dir=''):
     if (params[input_folder]['nucl_id_contrast_enh_type'] == 'none'):
         DAPI_ce_perc = 0
@@ -161,8 +303,14 @@ def count_spots(file_name, input_folder, output_folder, params,
     nucl_outline_file = base_file_name + '_nucl.tif'
 
     if(len(full_stack.shape)>3):
-        GFP_img = np.amax(full_stack[:, :, :, spot_ch], 0)
-        DAPI_img = np.amax(full_stack[:, :, :, nucl_ch], 0) #np.round(np.mean(full_stack[:, :, :, nucl_ch], 0)).astype(full_stack.dtype)
+        if(color_ch_index==-1):
+            GFP_img = np.amax(full_stack[:, :, :, spot_ch], 0)
+            DAPI_img = np.amax(full_stack[:, :, :, nucl_ch], 0)
+        elif(color_ch_index==1):
+            GFP_img = np.amax(full_stack[:, spot_ch, :, :], 0)
+            DAPI_img = np.amax(full_stack[:, nucl_ch, :, :], 0)
+        else:
+            print("Error: unsuppored color ch index provided.")
     else:
         DAPI_img = np.round(np.mean(full_stack, 0)).astype(full_stack.dtype)
         GFP_img = np.amax(full_stack, 0)
@@ -272,9 +420,8 @@ def count_spots(file_name, input_folder, output_folder, params,
             maj_ax_lens,
             cur_spot_df)
 
-
 def count_all_spots(base_dir, work_dir, param_file,
-                    spot_ch=0, nucl_ch=1,
+                    spot_ch=0, nucl_ch=1, color_ch_index=-1, roi=False,
                     save_extra_images=False, nucl_id_dir=''):
     params = helpers.read_parameters_from_file(param_file)
     folders = list(params.keys())
@@ -317,6 +464,8 @@ def count_all_spots(base_dir, work_dir, param_file,
                                         params,
                                         spot_ch,
                                         nucl_ch,
+                                        color_ch_index,
+                                        roi,
                                         save_extra_images,
                                         nucl_id_dir)
 
@@ -515,12 +664,15 @@ def combine_spots(work_dir, param_file):
 
 
 if __name__ == "__main__":
-    #base_dir="/Users/snk218/Dropbox/mac_files/holtlab/data_and_results/Nestor_spot_detection/test-images_Sarah"
-    base_dir="/Users/snk218/Dropbox/mac_files/holtlab/data_and_results/Farida_LINE1/spot_counting"
-    work_dir="/Users/snk218/Dropbox/mac_files/holtlab/data_and_results/Farida_LINE1/spot_counting-output"
+    usr = os.path.expanduser('~')
+
+    #base_dir=f"{usr}/Dropbox (NYU Langone Health)/mac_files/holtlab/data_and_results/Nestor_spot_detection/test-images_Sarah"
+    base_dir=f"{usr}/Dropbox (NYU Langone Health)/mac_files/holtlab/data_and_results/Farida_LINE1/spot_counting"
+    work_dir=f"{usr}/Dropbox (NYU Langone Health)/mac_files/holtlab/data_and_results/Farida_LINE1/spot_counting-output"
     param_file=base_dir + '/spot_counting_parameters.txt'
 
     count_all_spots(base_dir, work_dir, param_file,
-                    spot_ch=0, nucl_ch=2,
-                    save_extra_images=True, nucl_id_dir=work_dir+"/nucl_id")
+                    spot_ch=0, nucl_ch=1, color_ch_index=1,
+                    roi=True,
+                    save_extra_images=True)
     combine_spots(work_dir, param_file)
