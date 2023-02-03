@@ -3,7 +3,38 @@ from skimage import exposure, img_as_ubyte
 import numpy as np
 import cv2
 import warnings
+from skimage import draw
 warnings.filterwarnings('ignore', message='.+ is a low contrast image', category=UserWarning)
+
+def make_mask_from_roi(rois, img_shape):
+    # loop through ROIs, make mask with each ROI set to a label index
+    final_img = np.zeros(img_shape, dtype='uint8')
+    poly_error=False
+    label_index=1
+    for key in rois.keys():
+        roi = rois[key]
+        if (roi['type'] == 'polygon' or
+                (roi['type'] == 'freehand' and 'x' in roi and 'y' in roi) or
+                (roi['type'] == 'traced'   and 'x' in roi and 'y' in roi)):
+            col_coords = roi['x']
+            row_coords = roi['y']
+            rr, cc = draw.polygon(row_coords, col_coords, shape=img_shape)
+            final_img[rr, cc] = label_index
+        elif (roi['type'] == 'rectangle'):
+            rr, cc = draw.rectangle((roi['top'], roi['left']), extent=(roi['height'], roi['width']), shape=img_shape)
+            rr=rr.astype('int')
+            cc = cc.astype('int')
+            final_img[rr, cc] = label_index
+        elif (roi['type'] == 'oval'):
+            rr, cc = draw.ellipse(roi['top'] + roi['height'] / 2, roi['left'] + roi['width'] / 2, roi['height'] / 2, roi['width'] / 2, shape=img_shape)
+            final_img[rr, cc] = label_index
+        else:
+            poly_error=True
+
+        if(not poly_error):
+            label_index+=1
+
+    return (final_img, poly_error)
 
 def do_rescale(img, ll_perc, ul_perc):
     ll = ll_perc
