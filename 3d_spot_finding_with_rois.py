@@ -16,20 +16,29 @@ from skimage import filters
 
 def save_blobs_on_movie(blobs_df, movie, file_name):
     # on each slice, label blobs: combine as one movie
-    labels_nucl = np.zeros_like(movie)
-    labels_cyt = np.zeros_like(movie)
-    for row in blobs_df.iterrows():
-        if(row[1].location == 'nuclear'):
-            labels=labels_nucl
-        elif(row[1].location == 'cytoplasmic'):
-            labels=labels_cyt
+    if ("location" in blobs_df.columns):
+        labels_nucl = np.zeros_like(movie)
+        labels_cyt = np.zeros_like(movie)
+        for row in blobs_df.iterrows():
+            if(row[1].location == 'nuclear'):
+                labels=labels_nucl
+            elif(row[1].location == 'cytoplasmic'):
+                labels=labels_cyt
 
-        # draw circle on image
-        rr, cc = draw.circle_perimeter(int(row[1]['row (y)']), int(row[1]['col (x)']), int(row[1]['radius']),
-                                       shape=labels[0].shape)
-        labels[int(row[1]['plane (z)']), rr, cc] = 65535
+            # draw circle on image
+            rr, cc = draw.circle_perimeter(int(row[1]['row (y)']), int(row[1]['col (x)']), int(row[1]['radius']),
+                                           shape=labels[0].shape)
+            labels[int(row[1]['plane (z)']), rr, cc] = 65535
+        ij_stack = np.stack([movie, labels_nucl, labels_cyt], axis=1)
+    else:
+        labels = np.zeros_like(movie)
+        for row in blobs_df.iterrows():
+            # draw circle on image
+            rr, cc = draw.circle_perimeter(int(row[1]['row (y)']), int(row[1]['col (x)']), int(row[1]['radius']),
+                                           shape=labels[0].shape)
+            labels[int(row[1]['plane (z)']), rr, cc] = 65535
+        ij_stack = np.stack([movie, labels], axis=1)
 
-    ij_stack = np.stack([movie, labels_nucl, labels_cyt], axis=1)
     imwrite(file_name, ij_stack, imagej=True, metadata={'axes': 'ZCYX'})
 
 def get_roi_coords(rois, img_shape):
@@ -115,17 +124,17 @@ def make_mask_from_rois(rois, img_shape):
     return final_img, label_to_roi
 
 
-def find_spots(full_stack, rois, save_pre='',
-               spot_ch=0, nucl_ch=1, coloc_ch=3,
+def find_spots(full_stack, rois, labels_file_name='',
+               spot_ch=3, nucl_ch=1, intens_ch=0,
                blob_th=0.02, blob_th_rel=None,
                blob_min_s=1, blob_max_s=3):
 
     # (1) Detect blobs
     spot_stack = full_stack[:, spot_ch, :, :]
-    spot_stack = exposure.rescale_intensity(spot_stack)
+    spot_stack_rescl = exposure.rescale_intensity(spot_stack)
 
     print("Detecting blobs...")
-    blobs = feature.blob_log(spot_stack, min_sigma=blob_min_s, max_sigma=blob_max_s,
+    blobs = feature.blob_log(spot_stack_rescl, min_sigma=blob_min_s, max_sigma=blob_max_s,
                              num_sigma=(blob_max_s-blob_min_s+1),
                              threshold=blob_th, threshold_rel=blob_th_rel, overlap=0.5)
 
@@ -133,11 +142,12 @@ def find_spots(full_stack, rois, save_pre='',
 
     # (2) Pull out the nucleus channel and the channel for co-localization
     nuclei_stack = full_stack[:, nucl_ch, :, :]
-    coloc_stack = full_stack[:, coloc_ch, :, :]
+    coloc_stack = full_stack[:, intens_ch, :, :]
 
     # (3) go through blobs, label with the ROI, get the intensity of nuclei channel and the other channel
     roi_mask, labels_dict = make_mask_from_rois(rois, spot_stack[0].shape)
-    io.imsave(f"{save_pre}roi_labels.tif", roi_mask)
+    if(labels_file_name):
+        io.imsave(labels_file_name, roi_mask)
 
     blobs = blobs[np.argsort(blobs[:, 0])].copy()
     blobs_arr=[]
@@ -151,6 +161,7 @@ def find_spots(full_stack, rois, save_pre='',
         # simplification here since only taking mean intensity at one z-level
         mean_intens = np.mean(nuclei_stack[int(p)][rr, cc])
         mean_intens2 = np.mean(coloc_stack[int(p)][rr, cc])
+        mean_intens3 = np.mean(spot_stack[int(p)][rr, cc])
 
         # which ROI?
         label = roi_mask[int(r)][int(c)]
@@ -159,58 +170,83 @@ def find_spots(full_stack, rois, save_pre='',
         else:
             roi_key = ''
 
-        blobs_arr.append([p, r, c, radius, mean_intens, mean_intens2, label, roi_key])
+        blobs_arr.append([p, r, c, radius, mean_intens, mean_intens2, mean_intens3, label, roi_key])
 
     return pd.DataFrame(blobs_arr, columns=['plane (z)', 'row (y)', 'col (x)', 'radius',
-                                            'nuclei_ch_intensity', 'coloc_ch_intensity', 'label', 'roi'])
+                                            'nuclei_ch_intensity', 'coloc_ch_intensity', 'spot_ch_intensity',
+                                            'label', 'roi'])
 
 
-def randomize_spots(full_stack, rois, real_spot_df, nucl_ch=1, coloc_ch=3):
+def place_spots(coords, n, spot_r, z_dist, type, th, nuclei_stack):
+
+    random_spots_dict = {}
+    coords_choice = coords.copy()
+    num_spots_placed=0
+    while(num_spots_placed < n):
+
+        cur_coords = random.choice(coords_choice)
+        r=cur_coords[0]
+        c=cur_coords[1]
+
+        # select z-channel for spot
+        p = int(random.choice(z_dist.to_numpy()))
+
+        if((p, r, c) in random_spots_dict):
+            continue
+
+        # check intensity for this location
+        rr, cc = draw.disk((int(r), int(c)), int(spot_r), shape=nuclei_stack[0].shape)
+
+        # get mean intensity for these coordinates at the specified z-level
+        spot_intensity = np.mean(nuclei_stack[int(p)][rr, cc])
+
+        if((type == 'nuclear' and spot_intensity > th) or (type == 'cytoplasmic' and spot_intensity <= th)):
+            # place spot
+            random_spots_dict[(p, r, c)] = 1
+            coords_choice.remove(cur_coords)
+            num_spots_placed+=1
+
+    return random_spots_dict.keys()
+
+def randomize_spots(full_stack, rois, real_spot_df, loc_th_df, spot_ch=3, nucl_ch=1, intens_ch=0):
     # read in the roi and get the list of roi coordinates.
     # draw X number of random spots on the roi region, where X is same as detected spot count for each roi
     # spot radius will be uniform: the 'size' of the spots as quantified by blob_log is almost always the same
     # get the intensity of nuclei and RNA channels for each spot and save to file
 
     nuclei_stack = full_stack[:, nucl_ch, :, :]
-    coloc_stack = full_stack[:, coloc_ch, :, :]
+    coloc_stack = full_stack[:, intens_ch, :, :]
+    spot_stack = full_stack[:, spot_ch, :, :]
 
     blobs_arr = []
 
-    coords_dict = get_roi_coords(rois, nuclei_stack[0].shape) # TODO - fix return format of rows and columns!
+    coords_dict = get_roi_coords(rois, nuclei_stack[0].shape)
     for roi in coords_dict.keys():
         roi_coords = coords_dict[roi]
 
-        num_spots = real_spot_df[real_spot_df.roi==roi].shape[0]
-        radius = real_spot_df[real_spot_df.roi==roi]['radius'].mean()
-        z_ch_dist = real_spot_df[real_spot_df.roi == roi]['plane (z)']
+        for loc in ['cytoplasmic','nuclear']:
+            cur_spot_df = real_spot_df[(real_spot_df.roi==roi) & (real_spot_df.location==loc)]
+            num_spots = cur_spot_df.shape[0]
+            if(num_spots > 0):
 
-        random_spots_dict = {}
-        if(num_spots > 0):
+                cutoff = loc_th_df[loc_th_df['roi']==roi].iloc[0]['th']
+                radius = cur_spot_df[cur_spot_df.roi == roi]['radius'].mean()
+                z_ch_dist = cur_spot_df[cur_spot_df.roi == roi]['plane (z)']
 
-            random_spot_coords = random.sample(roi_coords, k=num_spots)
-            for (r, c) in random_spot_coords:
+                spot_positions = place_spots(roi_coords, num_spots, radius, z_ch_dist, loc, cutoff, nuclei_stack)
+                for (p,r,c) in spot_positions:
+                    rr, cc = draw.disk((int(r), int(c)), int(radius), shape=nuclei_stack[0].shape)
 
-                # select z-channel for spot
-                # it's possible to come up with the same position twice, so check for that
-                p = int(random.choice(z_ch_dist.to_numpy()))
-                while((p,r,c) in random_spots_dict):
-                    # make new z choice
-                    p = int(random.choice(z_ch_dist.to_numpy()))
+                    # get mean intensity for these coordinates at the specified z-level
+                    mean_intens = np.mean(nuclei_stack[int(p)][rr, cc])
+                    mean_intens2 = np.mean(coloc_stack[int(p)][rr, cc])
+                    mean_intens3 = np.mean(spot_stack[int(p)][rr, cc])
 
-                # found position for my random spot
-                random_spots_dict[(p,r,c)]=1
-
-                # get 2d blob coordinates (as a disk)
-                rr, cc = draw.disk((int(r), int(c)), int(radius), shape=nuclei_stack[0].shape)
-
-                # get mean intensity for these coordinates at the specified z-level
-                mean_intens = np.mean(nuclei_stack[int(p)][rr, cc])
-                mean_intens2 = np.mean(coloc_stack[int(p)][rr, cc])
-
-                blobs_arr.append([p, r, c, radius, mean_intens, mean_intens2, roi])
+                    blobs_arr.append([p, r, c, radius, mean_intens, mean_intens2, mean_intens3, loc, roi])
 
     return pd.DataFrame(blobs_arr, columns=['plane (z)', 'row (y)', 'col (x)', 'radius',
-                                            'nuclei_ch_intensity', 'coloc_ch_intensity', 'roi'])
+                                            'nuclei_ch_intensity', 'coloc_ch_intensity', 'spot_ch_intensity',
+                                            'location', 'roi'])
 
 
 def locate_spots(spot_df):
@@ -221,7 +257,7 @@ def locate_spots(spot_df):
         data = spot_df[spot_df.roi == roi]['nuclei_ch_intensity']
 
         if (len(data) > 1):
-            kmeans = KMeans(n_clusters=2, random_state=0).fit(data.to_numpy().reshape(-1, 1))
+            kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(data.to_numpy().reshape(-1, 1))
 
             if (data[kmeans.labels_ == 0].max() < data[kmeans.labels_ == 1].min()):
                 th1 = (data[kmeans.labels_ == 0].max() + data[kmeans.labels_ == 1].min()) / 2
@@ -244,33 +280,46 @@ def locate_spots(spot_df):
     return spot_df, output_df
 
 
-
 ########################################################################################################################
-home_dir = "/Users/snk218/Dropbox (NYU Langone Health)/mac_files"
+home_dir = "/Users/sarahkeegan/Dropbox (NYU Langone Health)/mac_files"
 img_dir = "holtlab/data_and_results/Farida_LINE1/spot_counting/20221030_LINE1/"
 
-condition="dox" #"no_dox"
+condition="dox" #"nodox"
 input_dir = f"{home_dir}/{img_dir}/{condition}"
 output_dir = f"{input_dir}/results"
 
 roi_suffix = "RoiSet"
 
-if(condition == "dox"):
-    th_settings={'zstack_001': 0.02, 'zstack_002': 0.02, 'zstack_003': 0.02, 'zstack_004': 0.02, 'zstack_005': 0.005}
-    my_th2=None
-    min_sigma=1
-    max_sigma=3
+spot_type = "RNA" #"ORF1" #"RNA"
+nuclei_channel = 1
+
+if(spot_type == "RNA"):
+    # for RNA (ch 0) spots:
+    spot_channel = 0
+    intensity_channel = 3
+    th={'zstack_001': 0.02, 'zstack_002': 0.02, 'zstack_003': 0.02, 'zstack_004': 0.02, 'zstack_005': 0.005}
+    min_sigma = {'zstack_001': 1, 'zstack_002': 1, 'zstack_003': 1, 'zstack_004': 1, 'zstack_005': 1}
+    max_sigma = {'zstack_001': 3, 'zstack_002': 3, 'zstack_003': 3, 'zstack_004': 3, 'zstack_005': 3}
+elif(spot_type == "ORF1"):
+    # for ORF1 (ch 3) spots:
+    spot_channel = 3
+    intensity_channel = 0
+
+    # *********************************************************************************************************
+    th = {'zstack_001': 0.025, 'zstack_002': 0.03, 'zstack_003': 0.075, 'zstack_004': 0.08, 'zstack_005': 0.075}
+
+    min_sigma = {'zstack_001': 1, 'zstack_002': 2, 'zstack_003': 1, 'zstack_004': 1, 'zstack_005': 1}
+    max_sigma = {'zstack_001': 3, 'zstack_002': 3, 'zstack_003': 3, 'zstack_004': 2, 'zstack_005': 3}
 else:
-    th_settings = {'zstack_nodox_006': 0.02, 'zstack_nodox_007': 0.02, 'zstack_nodox_008': 0.02}
-    my_th2=0.1
-    min_sigma=2
-    max_sigma=3
+    raise Exception("Error: invalid spot_type.")
+th2=None
 
 movie_files = glob.glob(f"{input_dir}/*.tif")
+
 full_df = pd.DataFrame()
 full_random_df = pd.DataFrame()
 full_loc_counts_df = pd.DataFrame()
-full_random_loc_counts_df = pd.DataFrame()
+
 for movie_file in movie_files:
     file_root = os.path.splitext(os.path.split(movie_file)[1])[0]
     rois = read_roi_zip(f"{input_dir}/{file_root}_{roi_suffix}.zip")
@@ -280,147 +329,56 @@ for movie_file in movie_files:
     #if(file_root != 'zstack_005'):
     #    continue
 
-    # find spots
-    blobs_df = find_spots(full_stack, rois, save_pre=f"{output_dir}/{file_root}-",
-                          blob_th=th_settings[file_root], blob_th_rel=my_th2,
-                          blob_min_s=min_sigma, blob_max_s=max_sigma)
+    # Save blobs on movie, color indicates location, if using
+    spot_stack = full_stack[:, spot_channel, :, :]
+    nuclei_stack = full_stack[:, nuclei_channel, :, :]
 
+    # find spots
+    blobs_df = find_spots(full_stack, rois, labels_file_name=f"{output_dir}/{file_root}-roi_labels.tif",
+                          spot_ch=spot_channel, nucl_ch=nuclei_channel, intens_ch=intensity_channel,
+                          blob_th=th[file_root], blob_th_rel=th2,
+                          blob_min_s=min_sigma[file_root], blob_max_s=max_sigma[file_root])
 
     # use nucleus signal to determine spot location (cytoplasmic or nuclear)
     # this adds a few columns to the data frame indicating the threshold levels and the location
     blobs_df, loc_counts_df = locate_spots(blobs_df)
 
-    # Save blobs on movie, color indicates location, if using
-    spot_stack = full_stack[:, 0, :, :]
-    nuclei_stack = full_stack[:, 1, :, :]
-    save_blobs_on_movie(blobs_df, spot_stack, file_name=f"{output_dir}/{file_root}-marked_blobs.tif")
-    save_blobs_on_movie(blobs_df, nuclei_stack, file_name=f"{output_dir}/{file_root}-marked_blobs-nucl.tif")
+    # save blobs on movie for checking - if location column exists in data frame, they will be colored by location
+    save_blobs_on_movie(blobs_df, spot_stack, file_name=f"{output_dir}/{file_root}-{spot_type}-marked_blobs.tif")
+    save_blobs_on_movie(blobs_df, nuclei_stack, file_name=f"{output_dir}/{file_root}-{spot_type}-marked_blobs-nucl.tif")
 
     # randomize spots
-    random_blobs_df = randomize_spots(full_stack, rois, blobs_df)
+    random_blobs_df = randomize_spots(full_stack, rois, blobs_df, loc_counts_df,
+                                      spot_ch=spot_channel, nucl_ch=nuclei_channel, intens_ch=intensity_channel)
 
-    # locate randomized spots
-    random_blobs_df, random_loc_counts_df = locate_spots(random_blobs_df)
+    # save random blobs on movie for checking - location only
+    save_blobs_on_movie(random_blobs_df, nuclei_stack,
+                        file_name=f"{output_dir}/{file_root}-{spot_type}-marked_random_blobs-nucl.tif")
 
-    blobs_df['file_name'] = file_root
     loc_counts_df['file_name'] = file_root
     random_blobs_df['file_name'] = file_root
-    random_loc_counts_df['file_name'] = file_root
 
-    full_df = pd.concat([full_df, blobs_df], axis=0, ignore_index=True)
     full_random_df = pd.concat([full_random_df, random_blobs_df], axis=0, ignore_index=True)
     full_loc_counts_df = pd.concat([full_loc_counts_df, loc_counts_df], axis=0, ignore_index=True)
-    full_random_loc_counts_df = pd.concat([full_random_loc_counts_df, random_loc_counts_df], axis=0, ignore_index=True)
+
+    blobs_df['file_name'] = file_root
+    full_df = pd.concat([full_df, blobs_df], axis=0, ignore_index=True)
+
+# Filter spots not within an ROI
+full_df=full_df[full_df['roi']!='']
+full_df.index = range(len(full_df))
+
+full_random_df=full_random_df[full_random_df['roi']!='']
+full_random_df.index = range(len(full_random_df))
+
+full_loc_counts_df=full_loc_counts_df[full_loc_counts_df['roi']!='']
+full_loc_counts_df.index = range(len(full_loc_counts_df))
+
 
 # Save final output files
-full_df.to_csv(f"{output_dir}/all_spots.txt", sep='\t')
-full_random_df.to_csv(f"{output_dir}/all_random_spots.txt", sep='\t')
-full_loc_counts_df.to_csv(f"{output_dir}/spot_counts.txt", sep='\t')
-full_random_loc_counts_df.to_csv(f"{output_dir}/random_spot_counts.txt", sep='\t')
-
-
-########################################################################################################################
-if(False):
-
-    def make_mask_from_roi(rois, roi_name, img_shape):
-        # set interior of selected ROI to 1
-        final_img = np.zeros(img_shape, dtype='uint8')
-        for key in rois.keys():
-            if (key == roi_name):
-                roi = rois[key]
-
-                if (roi['type'] == 'polygon' or
-                        (roi['type'] == 'freehand' and 'x' in roi and 'y' in roi) or
-                        (roi['type'] == 'traced' and 'x' in roi and 'y' in roi)):
-
-                    col_coords = roi['x']
-                    row_coords = roi['y']
-                    rr, cc = draw.polygon(row_coords, col_coords, shape=img_shape)
-                    final_img[rr, cc] = 1
-                    bbox = (row_coords.min(), col_coords.min(), row_coords.max(), col_coords.max())
-
-                elif (roi['type'] == 'rectangle'):
-
-                    rr, cc = draw.rectangle((roi['top'], roi['left']),
-                                            extent=(roi['height'], roi['width']),
-                                            shape=img_shape)
-                    rr = rr.astype('int')
-                    cc = cc.astype('int')
-                    final_img[rr, cc] = 1
-                    bbox = (roi['top'], roi['left'], roi['top'] + roi['height'], roi['left'] + roi['width'])
-
-                elif (roi['type'] == 'oval'):
-
-                    rr, cc = draw.ellipse(roi['top'] + roi['height'] / 2,
-                                          roi['left'] + roi['width'] / 2,
-                                          roi['height'] / 2,
-                                          roi['width'] / 2,
-                                          shape=img_shape)
-                    final_img[rr, cc] = 1
-                    bbox = (roi['top'], roi['left'], roi['top'] + roi['height'], roi['left'] + roi['width'])
-
-                else:
-                    print("Unknown roi type.")
-
-                break
-
-        return final_img, bbox
-
-
-
-    for movie_file in movie_files:
-        file_root = os.path.splitext(os.path.split(movie_file)[1])[0]
-        rois = read_roi_zip(f"{home_dir}/{img_dir}/{file_root}_RoiSet.zip")
-        full_stack = io.imread(f"{movie_file}")
-
-        print(movie_file)
-
-        # (1) Detect blobs
-        spot_stack = full_stack[:, spot_ch, :, :]
-        spot_stack = exposure.rescale_intensity(spot_stack)
-        blobs = feature.blob_log(spot_stack, min_sigma=1, max_sigma=3, num_sigma=10, threshold=0.01, overlap=0.5)
-        save_blobs_on_movie(blobs, spot_stack, f"{home_dir}/{img_dir}/results/{file_root}-marked_blobs.tif")
-
-        # (2) Pull out the nucleus channel and max z-project
-        nuclei_stack = full_stack[:, nucl_ch, :, :]
-        nuclei_zproj = np.max(full_stack, axis=0)
-
-        # (3) read ROIs, segment blobs to ROI, and to nucleus within ROI
-        for key in rois:
-            print(key)
-            roi_mask, roi_bbox = make_mask_from_roi(rois, key, spot_stack[0].shape)
-
-            # segment nuclei only within roi bbox
-            nuclei_image = nuclei_zproj[roi_bbox[0]:roi_bbox[2], roi_bbox[1]:roi_bbox[3]]
-
-            # saturate 6% of pixels (3% on top and 3% on bottom)
-            saturate_perc = 3
-            p1, p2 = np.percentile(nuclei_image, (saturate_perc, 100 - saturate_perc))
-            nuclei_image = exposure.rescale_intensity(nuclei_image, in_range=(p1, p2))
-
-            # median filter
-            disk_size = 4
-            nuclei_image = filters.median(nuclei_image, morphology.disk(disk_size))
-
-            # threshold, fill holes
-            otsu_th = filters.threshold_otsu(nuclei_image)
-            nuclei_mask = nuclei_image > otsu_th
-            nuclei_mask = binary_fill_holes(nuclei_mask)
-
-            # label, take largest object
-            labeled_image = measure.label(nuclei_mask)
-            props_table = measure.regionprops_table(labeled_image, properties=('label', 'bbox', 'area', 'coords'))
-            props_table.sort_values(by='area', ascending=False, inplace=True)
-
-            # fix coords back to original image (currently relative to bbox)
-            rr,cc = props_table.iloc[0]['coords']
-            rr = rr + roi_bbox[0]
-            cc = cc + roi_bbox[1]
-
-
-
-
-
+full_df.to_csv(f"{output_dir}/{spot_type}-all_spots.txt", sep='\t')
+full_random_df.to_csv(f"{output_dir}/{spot_type}-all_random_spots.txt", sep='\t')
+full_loc_counts_df.to_csv(f"{output_dir}/{spot_type}-spot_counts.txt", sep='\t')
 
 
 
